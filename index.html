@@ -244,28 +244,67 @@
   // Membaca data: mendukung file .xlsx, .xls, dan .csv
   // Jika file kosong (misal saat refresh), otomatis memulihkan data dari cache localStorage
   async function loadData(file) {
+    const KATEGORI_MAP = {
+      "f&b": "Makan",
+      "makan": "Makan",
+      "ojol": "Transportasi",
+      "transport": "Transportasi",
+      "skincare": "Self-care",
+      "selfcare": "Self-care",
+      "hiburan": "Hiburan",
+      "belanja": "Belanja",
+      "shopping": "Belanja",
+      "jajan": "Jajan & Kopi",
+      "jajan & kopi": "Jajan & Kopi",
+      "ngopi": "Jajan & Kopi",
+      "bills": "Tagihan",
+      "lain-lain": "Lainnya"
+    };
+
+    // Fungsi Data Cleaning: menghapus duplikasi dan standardisasi kategori
+    function prosesDataCleaning(rawRows) {
+      const seen = new Set();
+      const unique = [];
+      for (const r of rawRows) {
+        const tgl = String(r["Tanggal"] ?? "").trim();
+        const ket = String(r["Keterangan"] ?? "").trim();
+        const nom = String(r["Nominal"] ?? "").trim();
+        const key = `${tgl}|${ket}|${nom}`;
+        if (key.length > 5 && !seen.has(key)) {
+          seen.add(key);
+          const rawClean = { ...r };
+          const kat = String(rawClean["Kategori"] ?? "").trim();
+          if (KATEGORI_MAP[kat.toLowerCase()]) {
+            rawClean["Kategori"] = KATEGORI_MAP[kat.toLowerCase()];
+          }
+          unique.push(rawClean);
+        }
+      }
+      return unique.map(normalizeRow).filter(isValidRow);
+    }
+
     if (!file) {
       try {
-        const cachedRaw = localStorage.getItem(CACHE_KEY_DATA);
-        if (cachedRaw) {
-          const cached = JSON.parse(cachedRaw);
-          if (Array.isArray(cached.rows) && cached.rows.length > 0) {
-            const restoredRows = cached.rows.map(r => ({
-              ...r,
-              tanggal: new Date(r.tanggal)
-            })).filter(isValidRow);
-            if (restoredRows.length > 0) {
-              return {
-                rows: restoredRows,
-                source: "file",
-                fileName: cached.fileName || "file tersimpan",
-                fromCache: true
-              };
+        const response = await fetch("./transaksi.csv");
+        if (response.ok) {
+          const buffer = await response.arrayBuffer();
+          const workbook = XLSX.read(buffer, { type: "array", raw: true });
+          if (workbook && workbook.SheetNames && workbook.SheetNames.length > 0) {
+            const sheetName = workbook.SheetNames.includes(NAMA_SHEET)
+              ? NAMA_SHEET
+              : workbook.SheetNames[0];
+            const sheet = workbook.Sheets[sheetName];
+            if (sheet) {
+              const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+              const rows = prosesDataCleaning(rawRows);
+              if (rows.length > 0) {
+                return { rows, source: "file", fileName: "transaksi.csv" };
+              }
             }
           }
         }
       } catch (e) {
-        console.warn("Gagal memulihkan cache data:", e);
+        console.warn("Gagal memuat otomatis dari transaksi.csv, beralih ke data dummy:", e);
       }
 
       return { rows: DUMMY_DATA.map(normalizeRow).filter(isValidRow), source: "dummy" };
@@ -273,11 +312,10 @@
 
     try {
       const buffer = await file.arrayBuffer();
-      // SheetJS otomatis mendukung format .xlsx, .xls, dan .csv
       const workbook = XLSX.read(buffer, { type: "array", raw: true });
 
       if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
-        throw new Error("File spreadsheet tidak memiliki lembar kerja (sheet).");
+        throw new Error("File tidak memiliki lembar kerja (sheet).");
       }
 
       const sheetName = workbook.SheetNames.includes(NAMA_SHEET)
@@ -286,27 +324,15 @@
 
       const sheet = workbook.Sheets[sheetName];
       if (!sheet) {
-        throw new Error(`Lembar kerja "${sheetName}" tidak dapat dibaca atau kosong.`);
+        throw new Error(`Lembar kerja "${sheetName}" tidak ditemukan di dalam file.`);
       }
 
       const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      const rows = rawRows.map(normalizeRow).filter(isValidRow);
-
-      // Simpan data ke localStorage agar persisten saat halaman direfresh
-      try {
-        localStorage.setItem(CACHE_KEY_DATA, JSON.stringify({
-          rows,
-          fileName: file.name,
-          source: "file",
-          updatedAt: Date.now()
-        }));
-      } catch (e) {
-        console.warn("Gagal menyimpan data ke cache:", e);
-      }
+      const rows = prosesDataCleaning(rawRows);
 
       return { rows, source: "file", fileName: file.name };
     } catch (err) {
-      throw new Error(`Gagal membaca file spreadsheet (.xlsx / .xls): ${err.message || err}`);
+      throw new Error(`Gagal membaca file: ${err.message || err}`);
     }
   }
 
